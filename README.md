@@ -1,4 +1,6 @@
-# SEO Crawler (GUI)
+# Spider (SEO Crawler & GUI)
+
+Spider is an SEO crawler and audit tool for discovering site issues and producing CSV/JSON reports.
 
 This project contains an enterprise-grade SEO crawler and a PySide6 GUI.
 
@@ -41,3 +43,22 @@ Accessibility & shortcuts:
 Swift rewrite:
 
 - A Swift rewrite prototype lives in `swift/` which contains `SEOCrawlerLib` with a basic `HTTPFetcher` and `HTMLParser` and a minimal `seocrawler-cli` demonstration. Run `swift test` in `swift/` to execute unit tests.
+
+## Quick Start
+
+Create and activate a Python virtual environment, then install dependencies and run tests:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+pytest
+```
+
+## Contributing
+
+Contributions are welcome — open an issue or a PR. Please keep changes small and include tests for new behavior.
+
+## License
+
+Add your project license here (e.g., MIT).
