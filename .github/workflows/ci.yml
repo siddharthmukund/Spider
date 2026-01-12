@@ -1,0 +1,115 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.11, 3.12]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run tests (headless)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          sudo apt-get update && sudo apt-get install -y xvfb
+          xvfb-run -s "-screen 0 1920x1080x24" pytest -q
+
+  viewer-e2e:
+    name: Viewer E2E tests
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run viewer E2E (headless)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          sudo apt-get update && sudo apt-get install -y xvfb
+          xvfb-run -s "-screen 0 1920x1080x24" pytest -q \
+            tests/test_report_viewer_filters.py::test_pagination_filter_and_export \
+            tests/test_report_viewer_export.py::test_save_snapshot_and_export_csv \
+            tests/test_viewer_e2e_ci.py::test_open_exported_and_snapshot_e2e \
+            tests/test_accessibility.py::test_tab_order_and_accessible_descriptions \
+            tests/test_accessibility_keyboard.py::test_tab_navigation_and_shortcuts -q
+
+  verify-macos-artifact:
+    name: Verify macOS artifact
+    runs-on: macos-latest
+    needs: package-macos
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: seo-crawler-macos
+          path: ./artifacts
+      - name: Verify .app bundle
+        run: |
+          set -e
+          ls -la artifacts
+          APP=$(ls artifacts | grep ".app" | head -n1)
+          if [ -z "$APP" ]; then
+            echo "No .app found"; exit 1
+          fi
+          echo "Found app: $APP"
+          if [ ! -f "artifacts/$APP/Contents/Info.plist" ]; then
+            echo "Info.plist missing"; exit 1
+          fi
+          echo "Info.plist exists"
+      - name: Run artifact verification script
+        run: |
+          python3 scripts/verify_macos_artifact.py ./artifacts
+
+  package-macos:
+    name: macOS package
+    runs-on: macos-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Package with PyInstaller
+        run: |
+          # Provide optional env vars: ICON, BUNDLE_ID, VERSION, MAKE_DMG
+          bash scripts/package_mac.sh "$ENTRY_POINT" "$APP_NAME" "$ICON" "$BUNDLE_ID" "$VERSION" "$MAKE_DMG"
+      - name: Optional codesign & notarize
+        if: ${{ secrets.MACOS_SIGN_ID != '' }}
+        env:
+          MACOS_SIGN_ID: ${{ secrets.MACOS_SIGN_ID }}
+          NOTARY_PROFILE: ${{ secrets.NOTARY_PROFILE }}
+        run: |
+          bash scripts/sign_and_notarize.sh dist
+      - name: Run artifact verification script
+        run: |
+          python3 scripts/verify_macos_artifact.py dist
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: seo-crawler-macos
+          path: dist/**
+

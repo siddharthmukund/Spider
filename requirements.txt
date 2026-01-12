@@ -1,0 +1,7 @@
+requests
+beautifulsoup4
+pytest
+PySide6
+matplotlib
+pyinstaller
+pytest-qt

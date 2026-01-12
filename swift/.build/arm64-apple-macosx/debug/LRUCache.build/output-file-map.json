@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/LRUCache.build/master.swiftdeps"
+  },
+  "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/checkouts/LRUCache/Sources/LRUCache.swift": {
+    "dependencies": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/LRUCache.build/LRUCache.d",
+    "object": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/LRUCache.build/LRUCache.swift.o",
+    "swiftmodule": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/LRUCache.build/LRUCache~partial.swiftmodule",
+    "swift-dependencies": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/LRUCache.build/LRUCache.swiftdeps",
+    "diagnostics": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/LRUCache.build/LRUCache.dia"
+  }
+}

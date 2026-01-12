@@ -1,0 +1,26 @@
+{
+  "": {
+    "swift-dependencies": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/SEOCrawlerLib.build/master.swiftdeps"
+  },
+  "/Users/siddharth/Documents/VSCode/Crawler/swift/Sources/SEOCrawlerLib/HTMLParser.swift": {
+    "dependencies": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/SEOCrawlerLib.build/HTMLParser.d",
+    "object": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/SEOCrawlerLib.build/HTMLParser.swift.o",
+    "swiftmodule": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/SEOCrawlerLib.build/HTMLParser~partial.swiftmodule",
+    "swift-dependencies": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/SEOCrawlerLib.build/HTMLParser.swiftdeps",
+    "diagnostics": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/SEOCrawlerLib.build/HTMLParser.dia"
+  },
+  "/Users/siddharth/Documents/VSCode/Crawler/swift/Sources/SEOCrawlerLib/HTTPFetcher.swift": {
+    "dependencies": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/SEOCrawlerLib.build/HTTPFetcher.d",
+    "object": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/SEOCrawlerLib.build/HTTPFetcher.swift.o",
+    "swiftmodule": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/SEOCrawlerLib.build/HTTPFetcher~partial.swiftmodule",
+    "swift-dependencies": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/SEOCrawlerLib.build/HTTPFetcher.swiftdeps",
+    "diagnostics": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/SEOCrawlerLib.build/HTTPFetcher.dia"
+  },
+  "/Users/siddharth/Documents/VSCode/Crawler/swift/Sources/SEOCrawlerLib/Models.swift": {
+    "dependencies": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/SEOCrawlerLib.build/Models.d",
+    "object": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/SEOCrawlerLib.build/Models.swift.o",
+    "swiftmodule": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/SEOCrawlerLib.build/Models~partial.swiftmodule",
+    "swift-dependencies": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/SEOCrawlerLib.build/Models.swiftdeps",
+    "diagnostics": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/SEOCrawlerLib.build/Models.dia"
+  }
+}

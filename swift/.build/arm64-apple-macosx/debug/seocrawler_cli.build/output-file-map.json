@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/seocrawler_cli.build/master.swiftdeps"
+  },
+  "/Users/siddharth/Documents/VSCode/Crawler/swift/Sources/seocrawler-cli/main.swift": {
+    "dependencies": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/seocrawler_cli.build/main.d",
+    "object": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/seocrawler_cli.build/main.swift.o",
+    "swiftmodule": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/seocrawler_cli.build/main~partial.swiftmodule",
+    "swift-dependencies": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/seocrawler_cli.build/main.swiftdeps",
+    "diagnostics": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/seocrawler_cli.build/main.dia"
+  }
+}

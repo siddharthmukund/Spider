@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/SEOCrawlerLibTests.build/master.swiftdeps"
+  },
+  "/Users/siddharth/Documents/VSCode/Crawler/swift/Tests/SEOCrawlerLibTests/HTMLParserTests.swift": {
+    "dependencies": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/SEOCrawlerLibTests.build/HTMLParserTests.d",
+    "object": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/SEOCrawlerLibTests.build/HTMLParserTests.swift.o",
+    "swiftmodule": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/SEOCrawlerLibTests.build/HTMLParserTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/SEOCrawlerLibTests.build/HTMLParserTests.swiftdeps",
+    "diagnostics": "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/SEOCrawlerLibTests.build/HTMLParserTests.dia"
+  }
+}

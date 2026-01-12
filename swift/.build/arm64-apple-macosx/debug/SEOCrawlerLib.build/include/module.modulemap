@@ -1,0 +1,3 @@
+module SEOCrawlerLib {
+    header "/Users/siddharth/Documents/VSCode/Crawler/swift/.build/arm64-apple-macosx/debug/SEOCrawlerLib.build/include/SEOCrawlerLib-Swift.h"
+}
