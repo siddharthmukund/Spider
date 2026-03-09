@@ -120,16 +120,20 @@ class MainWindow(QMainWindow):
         self.progress.setRange(0, 100)
         layout.addWidget(self.progress)
 
-        # Live metrics panel (avg/fastest/slowest/ETA)
+        # Live metrics panel (avg/fastest/slowest/ETA/PPS)
         metrics_layout = QHBoxLayout()
         self.avg_label = QLabel('Avg: 0.00s')
         self.fastest_label = QLabel('Fastest: -')
         self.slowest_label = QLabel('Slowest: -')
         self.eta_label = QLabel('ETA: -')
+        self.pps_label = QLabel('PPS: 0.00')
         metrics_layout.addWidget(self.avg_label)
         metrics_layout.addWidget(self.fastest_label)
         metrics_layout.addWidget(self.slowest_label)
         metrics_layout.addWidget(self.eta_label)
+        metrics_layout.addWidget(self.pps_label)
+        self.cache_label = QLabel('Cache hit rate: 0.00%')
+        metrics_layout.addWidget(self.cache_label)
 
         # Sparkline
         from .sparkline import Sparkline
@@ -197,6 +201,8 @@ class MainWindow(QMainWindow):
         self.worker.progress.connect(self.on_progress)
         self.worker.metrics.connect(self.on_metrics)
         self.worker.eta.connect(self.on_eta)
+        self.worker.pps.connect(self.on_pps)
+        self.worker.cache_stats.connect(self.on_cache_stats)
 
     @Slot()
     def on_start(self):
@@ -220,12 +226,20 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def append_log(self, message: str):
         self.log_view.append(message)
+        # Prevent memory leaks/slowdowns by limiting log size to last 1000 lines
+        doc = self.log_view.document()
+        if doc.blockCount() > 1000:
+            cursor = self.log_view.textCursor()
+            cursor.movePosition(cursor.Start)
+            cursor.movePosition(cursor.Down, cursor.KeepAnchor, 100) # Remove chunks of 100
+            cursor.removeSelectedText()
 
     @Slot(str)
     def on_finished(self, report_path: str):
         self.append_log(f'Crawl finished, report: {report_path}')
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
+        self.pps_label.setText('PPS: 0.00')
 
     @Slot(int, int)
     def on_progress(self, completed: int, total: int):
@@ -233,7 +247,9 @@ class MainWindow(QMainWindow):
             if total:
                 percent = int((completed / total) * 100)
                 self.progress.setValue(percent)
-                self.append_log(f'Progress: {completed}/{total} ({percent}%)')
+                # Reduced logging frequency for progress
+                if completed % 10 == 0 or completed == total:
+                    self.append_log(f'Progress: {completed}/{total} ({percent}%)')
         except Exception:
             pass
 
@@ -247,28 +263,23 @@ class MainWindow(QMainWindow):
             self.avg_label.setText(f'Avg: {cur_avg:.2f}s')
             self.fastest_label.setText(f'Fastest: {fastest:.2f}s' if fastest is not None else 'Fastest: -')
             self.slowest_label.setText(f'Slowest: {slowest:.2f}s' if slowest is not None else 'Slowest: -')
-            self.append_log(f'Page: {url} time={response_time:.2f}s status={status_code}')
+            
+            # Simplified per-page logging
+            # self.append_log(f'Page: {url} time={response_time:.2f}s status={status_code}')
 
             # Update per-page table (prepend latest)
-            QTableWidgetItemClass = None
-            try:
-                from PySide6.QtWidgets import QTableWidgetItem
-                QTableWidgetItemClass = QTableWidgetItem
-            except Exception:
-                QTableWidgetItemClass = None
+            from PySide6.QtWidgets import QTableWidgetItem
+            self.metrics_table.insertRow(0)
+            self.metrics_table.setItem(0, 0, QTableWidgetItem(url))
+            self.metrics_table.setItem(0, 1, QTableWidgetItem(f"{response_time:.2f}"))
+            self.metrics_table.setItem(0, 2, QTableWidgetItem(str(status_code)))
+            
+            # Limit rows
+            while self.metrics_table.rowCount() > 50:
+                self.metrics_table.removeRow(self.metrics_table.rowCount() - 1)
 
-            if QTableWidgetItemClass:
-                self.metrics_table.insertRow(0)
-                self.metrics_table.setItem(0, 0, QTableWidgetItem(url))
-                self.metrics_table.setItem(0, 1, QTableWidgetItem(f"{response_time:.2f}"))
-                self.metrics_table.setItem(0, 2, QTableWidgetItem(str(status_code)))
-                # Limit rows
-                while self.metrics_table.rowCount() > 50:
-                    self.metrics_table.removeRow(self.metrics_table.rowCount() - 1)
-
-            # Update sparkline
-            try:
-                # gather response times from table
+            # Update sparkline (only every few pages to save CPU)
+            if self.worker._samples % 2 == 0:
                 vals = []
                 for r in range(self.metrics_table.rowCount()):
                     it = self.metrics_table.item(r, 1)
@@ -278,8 +289,6 @@ class MainWindow(QMainWindow):
                         except Exception:
                             pass
                 self.spark.update_data(list(reversed(vals)))
-            except Exception:
-                pass
         except Exception:
             pass
 
@@ -294,6 +303,22 @@ class MainWindow(QMainWindow):
                 else:
                     txt = f'{int(seconds)}s'
                 self.eta_label.setText(f'ETA: {txt}')
+        except Exception:
+            pass
+
+    @Slot(float)
+    def on_pps(self, pps_val: float):
+        try:
+            self.pps_label.setText(f'PPS: {pps_val:.2f}')
+        except Exception:
+            pass
+
+    @Slot(dict)
+    def on_cache_stats(self, stats: dict):
+        try:
+            self.cache_label.setText(
+                f"Cache: {stats.get('cache_hits', 0)}h / {stats.get('cache_misses', 0)}m ({stats.get('hit_rate_percent', 0.0):.2f}% hit rate)"
+            )
         except Exception:
             pass
 

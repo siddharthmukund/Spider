@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+pydantic
+celery[redis]
+redis
+httpx  # Required for FastAPI TestClient

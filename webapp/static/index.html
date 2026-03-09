@@ -1,0 +1,100 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>SEO Crawler Web</title>
+    <style>
+      body { font-family: Arial, sans-serif; padding: 20px }
+      #log { white-space: pre-wrap; background:#f7f7f7; padding:10px; height:300px; overflow:auto }
+    </style>
+  </head>
+  <body>
+    <h1>SEO Crawler (minimal)</h1>
+    <label>Base URL: <input id="url" value="https://example.com"></label>
+    <label>Max pages: <input id="max" type="number" value="10"></label>
+    <button id="start">Start Crawl</button>
+    <p>Task ID: <span id="task">-</span></p>
+    <h3>Live Events</h3>
+    <div id="log"></div>
+
+    <script>
+      const startBtn = document.getElementById('start');
+      const log = document.getElementById('log');
+      startBtn.onclick = async () => {
+        const url = document.getElementById('url').value;
+        const max = parseInt(document.getElementById('max').value, 10);
+        const res = await fetch('/start', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ base_url: url, max_pages: max })
+        });
+        const data = await res.json();
+        const id = data.task_id;
+        document.getElementById('task').textContent = id;
+        // Prefer WebSocket for richer updates (fallback to SSE if not available)
+        const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + `/ws/${id}`;
+        try {
+          const ws = new WebSocket(wsUrl);
+          const rtimes = [];
+          const startTime = Date.now();
+          const ppsLabel = document.createElement('div');
+          ppsLabel.id = 'pps';
+          ppsLabel.textContent = 'PPS: 0.00';
+          document.body.insertBefore(ppsLabel, log);
+
+          // create sparkline canvas using Chart.js
+          const canvas = document.createElement('canvas');
+          canvas.id = 'chart';
+          canvas.width = 400; canvas.height = 80;
+          document.body.insertBefore(canvas, log);
+          const script = document.createElement('script');
+          script.src = 'https://cdn.jsdelivr.net/npm/chart.js';
+          script.onload = () => {
+            const ctx = canvas.getContext('2d');
+            window._chart = new Chart(ctx, {
+              type: 'line', data: { labels: [], datasets: [{label:'resp', data:[], borderColor:'#1f77b4', fill:false}] }, options: { animation:false, scales:{x:{display:false}} }
+            });
+          };
+          document.head.appendChild(script);
+
+          ws.onmessage = (e) => {
+            const parsed = JSON.parse(e.data);
+            log.textContent += JSON.stringify(parsed) + '\n';
+            log.scrollTop = log.scrollHeight;
+            if (parsed.type === 'metric') {
+              rtimes.push(parsed.response_time);
+              if (window._chart) {
+                const ds = window._chart.data.datasets[0];
+                ds.data.push(parsed.response_time);
+                if (ds.data.length > 50) ds.data.shift();
+                window._chart.update();
+              }
+            }
+            if (parsed.type === 'cache') {
+              const k = parsed.stats;
+              // append cache summary
+              log.textContent += `Cache: ${k.cache_hits}h/${k.cache_misses}m (${k.hit_rate_percent}% hit)\n`;
+            }
+            if (parsed.type === 'progress') {
+              // compute pps from metrics seen divided by elapsed seconds
+              const elapsedSeconds = (Date.now() - startTime) / 1000;
+              const pps = elapsedSeconds > 0 ? (rtimes.length / elapsedSeconds).toFixed(2) : '0.00';
+              ppsLabel.textContent = `PPS: ${pps}`;
+            }
+          };
+
+          ws.onerror = () => { log.textContent += '\n[WebSocket closed]\n'; };
+          ws.onclose = () => { log.textContent += '\n[WebSocket closed]\n'; };
+        } catch (e) {
+          // fallback to SSE
+          const es = new EventSource(`/events/${id}`);
+          es.onmessage = (e) => {
+            const parsed = JSON.parse(e.data);
+            log.textContent += JSON.stringify(parsed) + '\n';
+            log.scrollTop = log.scrollHeight;
+          };
+          es.onerror = () => { log.textContent += '\n[EventSource closed]\n'; es.close(); };
+        }
+      };
+    </script>
+  </body>
+</html>

@@ -4,26 +4,80 @@ on: [push, pull_request]
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: Test Python ${{ matrix.python-version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        python-version: [3.11, 3.12]
+        python-version: ['3.10', '3.11', '3.12']
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
+      
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+      
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Run tests (headless)
+          pip install -r requirements-test.txt
+      
+      - name: Run tests with coverage (headless)
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          sudo apt-get update && sudo apt-get install -y xvfb
-          xvfb-run -s "-screen 0 1920x1080x24" pytest -q
+          if [ "$RUNNER_OS" == "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y xvfb
+            xvfb-run -s "-screen 0 1920x1080x24" pytest --cov=. --cov-report=xml --cov-report=term-missing --cov-fail-under=70
+          else
+            pytest --cov=. --cov-report=xml --cov-report=term-missing --cov-fail-under=70
+          fi
+        shell: bash
+      
+      - name: Upload coverage to Codecov
+        if: matrix.python-version == '3.11' && matrix.os == 'ubuntu-latest'
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: true
+  
+  security-scan:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install security tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install bandit safety
+      
+      - name: Run Bandit security scan
+        run: |
+          bandit -r . -ll -ii -f json -o bandit-report.json || true
+          bandit -r . -ll -ii
+      
+      - name: Run Safety dependency check
+        run: |
+          safety check --json --output safety-report.json || true
+          safety check
+      
+      - name: Upload security reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: |
+            bandit-report.json
+            safety-report.json
 
   viewer-e2e:
     name: Viewer E2E tests
@@ -79,6 +133,40 @@ jobs:
         run: |
           python3 scripts/verify_macos_artifact.py ./artifacts
 
+  # Integration tests: run Redis + Celery worker and execute integration tests
+  integration:
+    name: Integration (Redis + Celery)
+    runs-on: ubuntu-latest
+    needs: test
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.14'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r webapp/requirements.txt
+      - name: Start celery worker
+        env:
+          REDIS_URL: redis://localhost:6379/0
+        run: |
+          nohup celery -A webapp.tasks worker --loglevel=info > celery.log 2>&1 &
+          sleep 5
+      - name: Run integration tests
+        env:
+          REDIS_URL: redis://localhost:6379/0
+          USE_CELERY: '1'
+          RUN_CELERY_INTEGRATION: '1'
+        run: pytest tests/test_celery_integration.py -q
+
   package-macos:
     name: macOS package
     runs-on: macos-latest
@@ -111,5 +199,27 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: seo-crawler-macos
+          path: dist/**
+
+  build-swift-macos:
+    name: Build Swift macOS App
+    runs-on: macos-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Print Xcode version
+        run: xcodebuild -version
+      - name: Build SwiftUI app (release)
+        run: |
+          cd swift/SEOCrawlerApp
+          swift build -c release
+      - name: Create .app bundle
+        run: |
+          EXEC=$(swift build -c release --show-bin-path)/SEOCrawlerApp
+          scripts/create_macos_app.sh "$EXEC"
+      - name: Upload .app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SEOCrawlerApp-macos
           path: dist/**
 

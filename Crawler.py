@@ -11,7 +11,7 @@ from urllib.robotparser import RobotFileParser
 from datetime import datetime, timedelta
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
-from collections import defaultdict, deque, Counter
+from collections import defaultdict, deque, Counter, OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 from typing import Set, Dict, List, Tuple, Optional, Any, Callable
 import time
@@ -30,6 +30,34 @@ import sys
 from queue import PriorityQueue
 import signal
 from utils.json_helpers import JsonEncoder
+
+# LRU Cache for HTTP responses (reduce redundant requests)
+class ResponseCache:
+    """In-memory LRU cache for HTTP responses"""
+    def __init__(self, max_size: int = 1000):
+        self.cache: OrderedDict = OrderedDict()
+        self.max_size = max_size
+        self.hits = 0
+        self.misses = 0
+    
+    def get(self, key: str) -> Optional[Any]:
+        if key in self.cache:
+            self.cache.move_to_end(key)
+            self.hits += 1
+            return self.cache[key]
+        self.misses += 1
+        return None
+    
+    def set(self, key: str, value: Any) -> None:
+        if key in self.cache:
+            self.cache.move_to_end(key)
+        self.cache[key] = value
+        if len(self.cache) > self.max_size:
+            self.cache.popitem(last=False)
+    
+    def clear(self) -> None:
+        self.cache.clear()
+        self.hits = self.misses = 0
 
 # Register sqlite adapters/converters for datetime to avoid deprecation warnings
 sqlite3.register_adapter(datetime, lambda val: val.isoformat())
@@ -197,8 +225,12 @@ class DatabaseManager:
         self._init_db()
     
     def _init_db(self):
-        """Initialize database schema"""
+        """Initialize database schema with performance optimizations"""
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self.conn.execute('PRAGMA journal_mode=WAL')
+        self.conn.execute('PRAGMA synchronous=NORMAL')
+        self.conn.execute('PRAGMA cache_size=-64000')  # 64MB cache
+        
         cursor = self.conn.cursor()
         
         cursor.execute('''
@@ -277,14 +309,29 @@ class DatabaseManager:
         result = cursor.fetchone()
         return json.loads(result[0]) if result else None
 
-    def save_link(self, source_url: str, target_url: str, link_type: str, anchor_text: Optional[str] = None):
+    def save_links_batch(self, source_url: str, internal_links: List[Tuple[str, int, Priority]], external_links: List[str]):
+        """Save a batch of links efficiently using a single transaction"""
         cursor = self.conn.cursor()
-        cursor.execute('''
-            INSERT INTO links (source_url, target_url, link_type, anchor_text)
-            VALUES (?, ?, ?, ?)
-        ''', (source_url, target_url, link_type, anchor_text))
-        self.conn.commit()
-    
+        try:
+            # Save internal links
+            for link, _, _ in internal_links:
+                cursor.execute('''
+                    INSERT INTO links (source_url, target_url, link_type, anchor_text)
+                    VALUES (?, ?, ?, ?)
+                ''', (source_url, link, 'internal', None))
+            
+            # Save external links
+            for ext in external_links:
+                cursor.execute('''
+                    INSERT INTO links (source_url, target_url, link_type, anchor_text)
+                    VALUES (?, ?, ?, ?)
+                ''', (source_url, ext, 'external', None))
+            
+            self.conn.commit()
+        except Exception as e:
+            self.conn.rollback()
+            logger.error(f"Failed to save links batch for {source_url}: {e}")
+
     def close(self):
         """Close database connection"""
         if self.conn:
@@ -316,6 +363,22 @@ class AdvancedSEOCrawler:
     Enterprise-grade SEO crawler with advanced features
     """
     
+    # Pre-compiled regex for efficiency
+    RE_SENTENCES = re.compile(r'[.!?]+')
+    RE_WORDS = re.compile(r'\w+')
+    RE_KEYWORDS = re.compile(r'\b\w{4,}\b')
+    RE_WHITESPACE = re.compile(r'\s+')
+    RE_NON_ALPHANUM = re.compile(r'[^\w\s]')
+    
+    # Common file extensions to skip
+    SKIP_EXTENSIONS = {
+        '.pdf', '.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp', '.bmp',
+        '.zip', '.rar', '.tar', '.gz', '.7z', '.exe', '.dmg', '.pkg',
+        '.mp4', '.mp3', '.avi', '.mov', '.wmv', '.flv', '.wav',
+        '.css', '.js', '.ico', '.xml', '.json', '.txt',
+        '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx'
+    }
+
     def __init__(
         self,
         base_url: str,
@@ -334,6 +397,23 @@ class AdvancedSEOCrawler:
         compare_historical: bool = False,
         db_path: str = None
     ):
+        # Validate input parameters
+        try:
+            parsed_url = urlparse(base_url)
+            if not parsed_url.scheme or not parsed_url.netloc:
+                raise ValueError(f"Invalid base URL: '{base_url}' (must include scheme and domain)")
+        except Exception as e:
+            raise ValueError(f"Invalid base URL: {str(e)}")
+        
+        if max_pages < 1:
+            raise ValueError(f"max_pages must be >= 1, got {max_pages}")
+        if max_workers < 1:
+            raise ValueError(f"max_workers must be >= 1, got {max_workers}")
+        if timeout < 1:
+            raise ValueError(f"timeout must be >= 1, got {timeout}")
+        if rate_limit_rps < 0.1:
+            raise ValueError(f"rate_limit_rps must be >= 0.1, got {rate_limit_rps}")
+        
         self.base_url = self._normalize_url(base_url)
         self.domain = urlparse(base_url).netloc
         self.max_pages = max_pages
@@ -346,6 +426,9 @@ class AdvancedSEOCrawler:
         self.follow_external = follow_external
         self.use_database = use_database
         self.compare_historical = compare_historical
+
+        # Initialize response cache for better performance
+        self.response_cache = ResponseCache(max_size=1000)
 
         # Initialize crawl delay and last request time
         self.crawl_delay = None
@@ -411,13 +494,28 @@ class AdvancedSEOCrawler:
             'Upgrade-Insecure-Requests': '1',
         })
         
+        # Detector for best available HTML parser
+        self.html_parser = 'html.parser'
+        try:
+            import lxml
+            self.html_parser = 'lxml'
+        except ImportError:
+            pass
+        
         # Robots.txt
         self.robots_parser = None
         if respect_robots:
             self._init_robots_parser()
         
-        # Signal handling
-        signal.signal(signal.SIGINT, self._signal_handler)
+        # Signal handling: only register SIGINT handler if in the main thread (signal requires main thread)
+        try:
+            import threading as _threading
+            if _threading.current_thread() is _threading.main_thread():
+                signal.signal(signal.SIGINT, self._signal_handler)
+            else:
+                logger.debug("Not registering SIGINT handler since not in main thread")
+        except Exception as e:
+            logger.warning(f"Could not register SIGINT handler: {e}")
         self.interrupted = False
     
     def _signal_handler(self, signum, frame):
@@ -494,9 +592,22 @@ class AdvancedSEOCrawler:
             return Priority.LOW
     
     def _matches_pattern(self, url: str, patterns: List[str]) -> bool:
-        """Check pattern match"""
-        return any(re.search(pattern, url) for pattern in patterns)
-    
+        """Check pattern match with pre-compiled cache"""
+        if not hasattr(self, '_compiled_patterns'):
+            self._compiled_patterns = {}
+            
+        return any(self._get_compiled_regex(p).search(url) for p in patterns)
+
+    def _get_compiled_regex(self, pattern: str):
+        """Get or compile regex pattern"""
+        if pattern not in self._compiled_patterns:
+            try:
+                self._compiled_patterns[pattern] = re.compile(pattern)
+            except re.error:
+                # Fallback to literal if regex fails
+                self._compiled_patterns[pattern] = re.compile(re.escape(pattern))
+        return self._compiled_patterns[pattern]
+
     def _is_valid_url(self, url: str, depth: int = 0) -> bool:
         """Validate URL for crawling"""
         parsed = urlparse(url)
@@ -513,14 +624,8 @@ class AdvancedSEOCrawler:
         if self.include_patterns and not self._matches_pattern(url, self.include_patterns):
             return False
         
-        skip_extensions = {
-            '.pdf', '.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp', '.bmp',
-            '.zip', '.rar', '.tar', '.gz', '.7z', '.exe', '.dmg', '.pkg',
-            '.mp4', '.mp3', '.avi', '.mov', '.wmv', '.flv', '.wav',
-            '.css', '.js', '.ico', '.xml', '.json', '.txt',
-            '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx'
-        }
-        if any(parsed.path.lower().endswith(ext) for ext in skip_extensions):
+        path_lower = parsed.path.lower()
+        if any(path_lower.endswith(ext) for ext in self.SKIP_EXTENSIONS):
             return False
         
         return True
@@ -528,22 +633,22 @@ class AdvancedSEOCrawler:
     @staticmethod
     def _calculate_content_hash(text: str) -> str:
         """Calculate content hash"""
-        cleaned = re.sub(r'\s+', ' ', text.lower().strip())
-        cleaned = re.sub(r'[^\w\s]', '', cleaned)
+        cleaned = AdvancedSEOCrawler.RE_WHITESPACE.sub(' ', text.lower().strip())
+        cleaned = AdvancedSEOCrawler.RE_NON_ALPHANUM.sub('', cleaned)
         return hashlib.md5(cleaned.encode()).hexdigest()
     
     @staticmethod
     def _calculate_readability(text: str) -> float:
         """Flesch Reading Ease score"""
-        sentences = len(re.findall(r'[.!?]+', text))
-        words = len(re.findall(r'\w+', text))
-        syllables = sum(AdvancedSEOCrawler._count_syllables(word) 
-                       for word in re.findall(r'\w+', text))
+        sentences = len(AdvancedSEOCrawler.RE_SENTENCES.findall(text))
+        all_words = AdvancedSEOCrawler.RE_WORDS.findall(text)
+        words_count = len(all_words)
+        syllables = sum(AdvancedSEOCrawler._count_syllables(word) for word in all_words)
         
-        if sentences == 0 or words == 0:
+        if sentences == 0 or words_count == 0:
             return 0.0
         
-        score = 206.835 - 1.015 * (words / sentences) - 84.6 * (syllables / words)
+        score = 206.835 - 1.015 * (words_count / sentences) - 84.6 * (syllables / words_count)
         return max(0, min(100, score))
     
     @staticmethod
@@ -566,7 +671,7 @@ class AdvancedSEOCrawler:
     
     def _extract_keywords(self, text: str, top_n: int = 10) -> Dict[str, float]:
         """Extract keywords"""
-        words = re.findall(r'\b\w{4,}\b', text.lower())
+        words = AdvancedSEOCrawler.RE_KEYWORDS.findall(text.lower())
         total_words = len(words)
         
         if total_words == 0:
@@ -868,41 +973,83 @@ class AdvancedSEOCrawler:
         return internal, external
     
     def _crawl_page(self, url: str, depth: int) -> Optional[Set[Tuple[str, int, Priority]]]:
-        """Crawl single page"""
+        """Crawl single page with caching and enhanced error handling"""
         if not self._can_fetch(url):
             logger.info(f"Blocked by robots.txt: {url}")
             return set()
         
-        # Rate limiting
-        self.rate_limiter.acquire()
+        # Check response cache first to avoid redundant requests
+        cache_key = url
+        cached_response = self.response_cache.get(cache_key)
+        if cached_response is not None:
+            response, response_time = cached_response
+            logger.debug(f"Cache hit: {url}")
+        else:
+            # Rate limiting
+            self.rate_limiter.acquire()
 
-        # Enforce crawl delay from robots.txt
-        if self.crawl_delay is not None:
-            now = time.time()
-            wait = self.crawl_delay - (now - self.last_request_time)
-            if wait > 0:
-                time.sleep(wait)
-        
-        try:
-            start_time = time.time()
-            response = self.session.get(
-                url,
-                timeout=self.timeout,
-                allow_redirects=True,
-                stream=False
-            )
-            response_time = time.time() - start_time
-            self.last_request_time = time.time()
+            # Enforce crawl delay from robots.txt
+            if self.crawl_delay is not None:
+                now = time.time()
+                wait_time = self.crawl_delay - (now - self.last_request_time)
+                if wait_time > 0:
+                    time.sleep(wait_time)
+            
+            try:
+                start_time = time.time()
+                response = self.session.get(
+                    url,
+                    timeout=self.timeout,
+                    allow_redirects=True,
+                    stream=False
+                )
+                response_time = time.time() - start_time
+                self.last_request_time = time.time()
+                
+                # Cache successful response
+                self.response_cache.set(cache_key, (response, response_time))
+            except requests.exceptions.Timeout as e:
+                logger.warning(f"Timeout ({self.timeout}s): {url}")
+                with self.data_lock:
+                    self.page_data[url] = PageData(url=url, error=f"Timeout after {self.timeout}s")
+                    self.statistics.failed_pages += 1
+                    self.statistics.errors_by_type['Timeout'] += 1
+                return set()
+            except requests.exceptions.ConnectionError as e:
+                logger.warning(f"Connection failed: {url} - {str(e)[:80]}")
+                with self.data_lock:
+                    self.page_data[url] = PageData(url=url, error="Connection error")
+                    self.statistics.failed_pages += 1
+                    self.statistics.errors_by_type['ConnectionError'] += 1
+                return set()
+            except requests.exceptions.HTTPError as e:
+                logger.warning(f"HTTP error: {url} - {str(e)[:80]}")
+                with self.data_lock:
+                    self.page_data[url] = PageData(url=url, error="HTTP error")
+                    self.statistics.failed_pages += 1
+                    self.statistics.errors_by_type['HTTPError'] += 1
+                return set()
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"Request error: {url} - {str(e)[:80]}")
+                with self.data_lock:
+                    self.page_data[url] = PageData(url=url, error="Request error")
+                    self.statistics.failed_pages += 1
+                    self.statistics.errors_by_type['RequestException'] += 1
+                return set()
+            except Exception as e:
+                logger.error(f"Unexpected error crawling {url}: {str(e)[:100]}")
+                with self.data_lock:
+                    self.page_data[url] = PageData(url=url, error=str(e)[:200])
+                    self.statistics.failed_pages += 1
+                    self.statistics.errors_by_type['UnexpectedError'] += 1
+                return set()
             
             # Emit per-page metrics callback if available
             try:
                 if hasattr(self, 'metrics_callback') and callable(self.metrics_callback):
-                    try:
-                        self.metrics_callback(url, response_time, response.status_code)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                    self.metrics_callback(url, response_time, response.status_code)
+            except Exception as e:
+                logger.debug(f"Metrics callback error: {str(e)[:80]}")
 
             with self.data_lock:
                 self.statistics.total_data_transferred += len(response.content)
@@ -935,30 +1082,51 @@ class AdvancedSEOCrawler:
                         'status_codes': [r.status_code for r in response.history]
                     })
                     self.statistics.redirected_pages += 1
+        
+        # Process HTML only
+        content_type = response.headers.get('content-type', '').lower()
+        if 'html' not in content_type:
+            logger.debug(f"Skipping non-HTML content: {url} ({content_type})")
+            return set()
+        
+        try:
+            # Hash content to detect duplicates
+            import hashlib
+            content_hash = hashlib.md5(response.content).hexdigest()
             
-            # Process HTML only
-            content_type = response.headers.get('content-type', '').lower()
-            if 'html' not in content_type:
-                return set()
-            
+            # Check for duplicate content across DIFFERENT URLs
+            with self.data_lock:
+                duplicates = self.duplicate_content.setdefault(content_hash, [])
+                if duplicates:
+                    logger.debug(f"Duplicate content detected: {url} matches {duplicates[0]}")
+                duplicates.append(url)
+
             # Extract data
-            soup = BeautifulSoup(response.text, 'html.parser')
+            soup = BeautifulSoup(response.text, self.html_parser)
             page_data = self._extract_seo_data(url, response, soup)
+            page_data.content_hash = content_hash
             page_data.response_time = response_time
             page_data.load_time = response_time
             
             # Historical comparison
             if self.compare_historical and self.db:
-                historical = self.db.get_historical_data(url)
-                if historical:
-                    page_data.custom_data['historical_comparison'] = {
-                        'title_changed': historical.get('title') != page_data.title,
-                        'word_count_diff': page_data.word_count - historical.get('word_count', 0),
-                        'performance_diff': page_data.response_time - historical.get('response_time', 0)
-                    }
+                try:
+                    historical = self.db.get_historical_data(url)
+                    if historical:
+                        page_data.custom_data['historical_comparison'] = {
+                            'title_changed': historical.get('title') != page_data.title,
+                            'word_count_diff': page_data.word_count - historical.get('word_count', 0),
+                            'performance_diff': page_data.response_time - historical.get('response_time', 0)
+                        }
+                except Exception as e:
+                    logger.debug(f"Historical comparison failed for {url}: {str(e)[:80]}")
             
             # Get links
-            internal_links, external_links = self._extract_links(url, soup, depth)
+            try:
+                internal_links, external_links = self._extract_links(url, soup, depth)
+            except Exception as e:
+                logger.debug(f"Link extraction failed for {url}: {str(e)[:80]}")
+                internal_links, external_links = set(), set()
             
             page_data.internal_links_count = len(internal_links)
             page_data.external_links_count = len(external_links)
@@ -970,49 +1138,33 @@ class AdvancedSEOCrawler:
                 self.external_links[url] = list(external_links)
                 self.url_depth[url] = depth
                 
-                # Duplicate detection
-                self.duplicate_content[page_data.content_hash].append(url)
-                
                 self.statistics.successful_pages += 1
 
             # Persist links to database
             if self.db:
-                with self.data_lock:
-                    for link, _, _ in internal_links:
-                        self.db.save_link(url, link, 'internal', None)
-                    for ext in external_links:
-                        self.db.save_link(url, ext, 'external', None)
-                
-                # Save page data
-                self.db.save_page(page_data)
+                try:
+                    self.db.save_links_batch(url, list(internal_links), list(external_links))
+                    # Save page data
+                    self.db.save_page(page_data)
+                except Exception as e:
+                    logger.debug(f"Database save failed for {url}: {str(e)[:80]}")
             
             # Execute plugins
             if self.plugins:
-                self.plugins.execute('post_crawl', url, page_data)
+                try:
+                    self.plugins.execute('post_crawl', url, page_data)
+                except Exception as e:
+                    logger.debug(f"Plugin execution failed for {url}: {str(e)[:80]}")
             
             return internal_links
             
-        except requests.exceptions.Timeout:
-            logger.warning(f"Timeout: {url}")
-            with self.data_lock:
-                self.page_data[url] = PageData(url=url, error="Timeout")
-                self.statistics.failed_pages += 1
-                self.statistics.errors_by_type['Timeout'] += 1
-        except requests.exceptions.RequestException as e:
-            error_type = type(e).__name__
-            logger.warning(f"{error_type}: {url}")
-            with self.data_lock:
-                self.page_data[url] = PageData(url=url, error=str(e)[:200])
-                self.statistics.failed_pages += 1
-                self.statistics.errors_by_type[error_type] += 1
         except Exception as e:
-            logger.error(f"Unexpected error: {url}: {str(e)[:100]}")
+            logger.error(f"Unexpected error processing {url}: {str(e)[:100]}")
             with self.data_lock:
                 self.page_data[url] = PageData(url=url, error=str(e)[:200])
                 self.statistics.failed_pages += 1
-                self.statistics.errors_by_type['Unexpected'] += 1
-        
-        return set()
+                self.statistics.errors_by_type['ProcessingError'] += 1
+            return set()
     
     def _get_next_url(self) -> Tuple[Optional[str], Optional[int]]:
         """Get next URL with priority"""
@@ -1083,12 +1235,14 @@ class AdvancedSEOCrawler:
                         except Exception:
                             pass
 
-                        # Submit new URL
-                        if len(self.visited) < self.max_pages and not self.interrupted:
+                        # Fill thread pool with new URLs
+                        while len(futures) < self.max_workers and len(self.visited) < self.max_pages and not self.interrupted:
                             next_url, next_depth = self._get_next_url()
                             if next_url:
                                 new_future = executor.submit(self._crawl_page, next_url, next_depth)
                                 futures[new_future] = (next_url, next_depth)
+                            else:
+                                break
                     
                     except Exception as e:
                         logger.error(f"Processing error {url}: {e}")
@@ -1143,6 +1297,19 @@ class AdvancedSEOCrawler:
                                 'status_code': page.status_code,
                                 'error': page.error
                             })
+    
+    def get_cache_statistics(self) -> Dict[str, Any]:
+        """Get response cache statistics"""
+        total_requests = self.response_cache.hits + self.response_cache.misses
+        hit_rate = (self.response_cache.hits / total_requests * 100) if total_requests > 0 else 0.0
+        return {
+            'cache_hits': self.response_cache.hits,
+            'cache_misses': self.response_cache.misses,
+            'total_requests': total_requests,
+            'hit_rate_percent': round(hit_rate, 2),
+            'cache_size': len(self.response_cache.cache),
+            'max_cache_size': self.response_cache.max_size
+        }
     
     def generate_seo_report(self, filename: str = 'seo_report.json'):
         """Generate comprehensive report"""

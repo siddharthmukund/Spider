@@ -1,0 +1,35 @@
+{
+  "9329c5e8-e9fe-4e83-9ade-2b38987b3655": {
+    "id": "9329c5e8-e9fe-4e83-9ade-2b38987b3655",
+    "status": "finished",
+    "report": "web_output/9329c5e8-e9fe-4e83-9ade-2b38987b3655/seo_report.json",
+    "cache_stats": {
+      "cache_hits": 0,
+      "cache_misses": 1,
+      "total_requests": 1,
+      "hit_rate_percent": 0.0,
+      "cache_size": 0,
+      "max_cache_size": 1000
+    },
+    "started_at": 1773060819.908205,
+    "finished_at": 1773060822.04496,
+    "base_url": "https://example.com/",
+    "max_pages": 10,
+    "max_workers": 2,
+    "output_dir": "web_output/9329c5e8-e9fe-4e83-9ade-2b38987b3655",
+    "created_at": 1773060819.904751
+  },
+  "2ac043a2-5b31-46ae-8022-ed1eaeeb023a": {
+    "id": "2ac043a2-5b31-46ae-8022-ed1eaeeb023a",
+    "status": "running",
+    "report": null,
+    "cache_stats": null,
+    "started_at": 1773060820.57536,
+    "finished_at": null,
+    "base_url": "https://example.com/path",
+    "max_pages": 5,
+    "max_workers": 3,
+    "output_dir": "web_output/2ac043a2-5b31-46ae-8022-ed1eaeeb023a",
+    "created_at": 1773060820.57467
+  }
+}

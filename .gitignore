@@ -22,3 +22,6 @@ docs/_build/
 *.log
 .idea/
 .vscode/
+
+# Swift build artifacts
+swift/SEOCrawlerApp/.build/
