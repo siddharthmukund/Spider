@@ -1,0 +1,12 @@
+{
+  "testuser": {
+    "username": "testuser",
+    "hashed_password": "$2b$12$5VQ6Rn3eKsjk3Nvh4AQuX.3.OpWF9axg9gD/dYy8ruM2gPqwOBb7S",
+    "scopes": [
+      "*"
+    ],
+    "is_active": true,
+    "is_superuser": false,
+    "api_keys": []
+  }
+}

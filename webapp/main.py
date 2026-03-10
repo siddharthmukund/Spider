@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, Any
 
 from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
 from pydantic import BaseModel, HttpUrl, Field
 
@@ -19,7 +20,7 @@ sys.path.insert(0, str(ROOT))
 from Crawler import AdvancedSEOCrawler
 
 # Import security modules
-from webapp.security.auth import verify_api_key
+from webapp.security.auth import verify_api_key, get_current_user, authenticate_user, create_access_token, decode_access_token
 from webapp.security.ssrf import SSRFValidator
 from webapp.security.rate_limit import create_rate_limiter
 from webapp.security.audit import get_audit_logger, AuditEvent
@@ -151,14 +152,25 @@ class StartRequest(BaseModel):
     respect_robots: bool = Field(default=True, description="Respect robots.txt")
 
 
-@app.post('/start', dependencies=[Depends(verify_api_key)])
-async def start_crawl(req: StartRequest, request: Request, api_key: str = Depends(verify_api_key)):
-    """Start a new crawl task with security validation."""
-    
+@app.post('/start')
+async def start_crawl(
+    req: StartRequest,
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
+    """Start a new crawl task with security validation.
+
+    Authentication is performed using JWT (preferred) or API key via
+    ``verify_api_key`` dependency inside ``get_current_user``. The
+    ``current_user`` object will contain user information including
+    ``username`` and ``scopes``.
+    """
+
     client_ip = request.client.host if request.client else 'unknown'
     
-    # 1. Rate limiting
-    if not rate_limiter.check(client_ip):
+    # 1. Rate limiting (per-user)
+    user_key = current_user.get('username', client_ip)
+    if not rate_limiter.check(user_key):
         audit.log_rate_limited(client_ip, '/start')
         raise HTTPException(
             status_code=429,
@@ -173,8 +185,8 @@ async def start_crawl(req: StartRequest, request: Request, api_key: str = Depend
         raise HTTPException(status_code=400, detail=f"Invalid URL: {error_msg}")
     
     # 3. Log successful authentication
-    audit.log_auth_success(client_ip)
-    
+    audit.log_auth_success(client_ip, user_id=current_user.get('username'))
+
     # Create task
     import time
     task_id = str(uuid.uuid4())
@@ -220,8 +232,23 @@ async def start_crawl(req: StartRequest, request: Request, api_key: str = Depend
     return {'task_id': task_id}
 
 
-@app.get('/status/{task_id}', dependencies=[Depends(verify_api_key)])
-async def get_status(task_id: str, api_key: str = Depends(verify_api_key)):
+@app.post('/token')
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
+    """OAuth2 password grant: return JWT token."""
+    user = await authenticate_user(form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token = create_access_token(
+        data={"sub": user['username'], "scopes": user.get('scopes', [])}
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.get('/status/{task_id}')
+async def get_status(task_id: str, current_user: dict = Depends(get_current_user)):
     info = TASKS.get(task_id)
     if not info:
         raise HTTPException(status_code=404, detail='Task not found')
@@ -233,8 +260,8 @@ async def get_status(task_id: str, api_key: str = Depends(verify_api_key)):
     }
 
 
-@app.get('/report/{task_id}', dependencies=[Depends(verify_api_key)])
-async def get_report(task_id: str, api_key: str = Depends(verify_api_key)):
+@app.get('/report/{task_id}')
+async def get_report(task_id: str, current_user: dict = Depends(get_current_user)):
     info = TASKS.get(task_id)
     if not info:
         raise HTTPException(status_code=404, detail='Task not found')
@@ -311,7 +338,7 @@ def _start_local_task(task_id: str):
 
 
 @app.get('/events/{task_id}')
-async def events(task_id: str):
+async def events(task_id: str, current_user: dict = Depends(get_current_user)):
     info = TASKS.get(task_id)
     if not info:
         raise HTTPException(status_code=404, detail='Task not found')
@@ -332,6 +359,25 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 @app.websocket('/ws/{task_id}')
 async def websocket_endpoint(websocket: WebSocket, task_id: str):
+    # authenticate websocket using Authorization header or query param
+    auth_header = websocket.headers.get('authorization')
+    token = None
+    if auth_header and auth_header.lower().startswith('bearer '):
+        token = auth_header.split(' ', 1)[1]
+    else:
+        # fallback to query param ?token=
+        token = websocket.query_params.get('token')
+    try:
+        if not token:
+            raise HTTPException(status_code=401, detail="Missing token")
+        user = decode_access_token(token)
+        # optionally verify user exists
+        from webapp.store import get_user
+        if not get_user(user.get('sub')):
+            raise HTTPException(status_code=401, detail="Invalid user")
+    except HTTPException:
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     info = TASKS.get(task_id)
     if not info:
@@ -372,17 +418,24 @@ async def index():
 # Exception handlers for better error responses
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
-    """Custom HTTP exception handler with audit logging."""
+    """Custom HTTP exception handler with audit logging.
+
+    Returns a JSONResponse to avoid the ``TypeError`` seen during tests.
+    """
+    from fastapi.responses import JSONResponse
+
     client_ip = request.client.host if request.client else 'unknown'
-    
     # Log authentication failures
     if exc.status_code in [401, 403]:
         audit.log_auth_failure(client_ip, exc.detail)
-    
-    return {
-        'error': exc.detail,
-        'status_code': exc.status_code
-    }
+
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            'detail': exc.detail,
+            'status_code': exc.status_code
+        }
+    )
 
 
 if __name__ == '__main__':

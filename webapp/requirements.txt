@@ -4,3 +4,6 @@ pydantic
 celery[redis]
 redis
 httpx  # Required for FastAPI TestClient
+passlib[bcrypt]  # password hashing for multi-tenant auth
+pyjwt  # JWT token creation/verification
+python-multipart  # required for OAuth2 password grant form handling

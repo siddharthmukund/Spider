@@ -12,15 +12,38 @@ def client():
 
 @pytest.fixture(autouse=True)
 def mock_api_key(monkeypatch):
-    """Mock API key for testing."""
+    """Mock environment API key for backward compatibility tests."""
     test_key = "test-api-key-12345"
     monkeypatch.setenv("WEBAPP_API_KEY", test_key)
     return test_key
 
 
 @pytest.fixture
-def auth_headers(mock_api_key):
-    """Generate authentication headers."""
+def create_user():
+    from webapp.store import add_user, load_users
+    from webapp.security.auth import get_password_hash
+    username = "testuser"
+    password = "secret"
+    hashed = get_password_hash(password)
+    users = load_users()
+    users.pop(username, None)
+    add_user(username, hashed, scopes=["*"], is_active=True)
+    return {"username": username, "password": password}
+
+
+@pytest.fixture
+def auth_headers(create_user):
+    from fastapi.testclient import TestClient
+    from webapp.main import app
+    client = TestClient(app)
+    resp = client.post("/token", data={"username": create_user["username"], "password": create_user["password"]})
+    token = resp.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def api_key_headers(mock_api_key):
+    """Generate headers using the mocked environment API key."""
     return {"X-API-Key": mock_api_key}
 
 
@@ -78,3 +101,10 @@ class TestStatusEndpoint:
         """Test that status endpoint requires authentication."""
         response = client.get(f"/status/{sample_task_id}")
         assert response.status_code == 401
+
+    def test_status_with_api_key_fallback(self, client, api_key_headers, sample_task_id):
+        """Verify that legacy API key still works for status."""
+        response = client.get(f"/status/{sample_task_id}", headers=api_key_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert data['status'] == 'running'
