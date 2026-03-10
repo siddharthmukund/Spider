@@ -81,7 +81,7 @@ This document outlines the design approach for Phase 3 of the SEO Crawler enhanc
 
 ## 4. SSRF Enhancements
 
-- Implement allowlist mode: environment variable `SSRF_ALLOWED_HOSTS` or `base_url` domain check.
+- Implement allowlist mode: environment variable `SSRF_ALLOWED_HOSTS` or `base_url` domain check.  The validator should also tolerate DNS resolution failures (useful for offline testing).
 - Add caching of DNS resolutions to prevent TOCTOU.
 
 ## 5. Security Dashboard
