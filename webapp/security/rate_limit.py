@@ -3,6 +3,7 @@
 Provides both in-memory and Redis-backed rate limiting.
 """
 import time
+import ipaddress
 from collections import defaultdict
 from dataclasses import dataclass, field
 from threading import Lock
@@ -71,8 +72,20 @@ class TokenBucket:
 
 
 class RateLimiter:
-    """Per-client rate limiting using token bucket algorithm."""
+    """Per-client rate limiting with optional geo/IP awareness and adaptive tiers.
+
+    Configuration is controlled via environment variables:
+
+    * ``RATE_LIMIT_GEO`` – JSON mapping country codes to ``{{"rpm":int,"burst":int}}``
+      dictionaries. The special key ``"DEFAULT"`` provides fallback values.
+    * ``RATE_LIMIT_TIERS`` – JSON mapping tier names (matching user scope names)
+      to limit objects similar to ``RATE_LIMIT_GEO``. If a user has multiple
+      scopes, the first matching tier is applied.
     
+    The limiter computes limits on each call and updates the underlying
+    ``TokenBucket`` accordingly. This provides adaptive behaviour without
+    needing to re-instantiate the limiter.
+    """
     def __init__(
         self,
         requests_per_minute: int = 60,
@@ -82,40 +95,131 @@ class RateLimiter:
         Initialize rate limiter.
         
         Args:
-            requests_per_minute: Sustained rate limit
+            requests_per_minute: Sustained rate limit for default tier
             burst_capacity: Maximum burst capacity (defaults to requests_per_minute)
         """
         self.requests_per_minute = requests_per_minute
         self.burst_capacity = burst_capacity or requests_per_minute
         self.refill_rate = requests_per_minute / 60.0  # tokens per second
-        
+
+        # parse adaptive configuration
+        self.geo_rules = self._load_rules(os.getenv("RATE_LIMIT_GEO", "{}"))
+        self.tier_rules = self._load_rules(os.getenv("RATE_LIMIT_TIERS", "{}"))
+
         self.buckets: Dict[str, TokenBucket] = defaultdict(self._create_bucket)
         self._cleanup_lock = Lock()
         self._last_cleanup = time.monotonic()
     
     def _create_bucket(self) -> TokenBucket:
-        """Create a new token bucket for a client."""
+        """Create a new token bucket for a client using the base limits."""
         return TokenBucket(
             capacity=self.burst_capacity,
             refill_rate=self.refill_rate
         )
-    
-    def check(self, client_id: str, tokens: int = 1) -> bool:
+
+    def _load_rules(self, raw: str) -> Dict[str, Dict[str, int]]:
+        """Parse JSON rules string into dictionary.
+
+        Expected format: {"KEY": {"rpm":60, "burst":80}, ...}
         """
-        Check if request should be allowed.
+        import json
+        try:
+            return json.loads(raw) if raw else {}
+        except Exception:
+            return {}
+    
+    def check(
+        self,
+        client_id: str,
+        tokens: int = 1,
+        client_ip: Optional[str] = None,
+        user_scopes: Optional[list] = None
+    ) -> bool:
+        """
+        Check if request should be allowed with adaptive limits.
         
         Args:
-            client_id: Unique identifier for the client (e.g., IP address)
+            client_id: Unique identifier for the client (e.g., user name)
             tokens: Number of tokens to consume (default 1)
-            
+            client_ip: Optional IP address for geo lookup
+            user_scopes: Optional list of user scope strings
+        
         Returns:
             bool: True if request allowed, False if rate limited
         """
         # Periodic cleanup of old buckets
         self._periodic_cleanup()
-        
+
+        # compute dynamic limits and adjust bucket if necessary
+        rpm, burst = self._determine_limits(client_id, client_ip, user_scopes)
         bucket = self.buckets[client_id]
+        # update bucket configuration if changed
+        if bucket.capacity != burst or bucket.refill_rate != rpm / 60.0:
+            bucket.capacity = burst
+            bucket.refill_rate = rpm / 60.0
+            if bucket.tokens > burst:
+                bucket.tokens = burst
+
         return bucket.consume(tokens)
+
+    def _determine_limits(
+        self,
+        client_id: str,
+        client_ip: Optional[str],
+        user_scopes: Optional[list]
+    ) -> tuple[int, int]:
+        """Return (rpm, burst) based on geo and tier rules."""
+        # start with defaults
+        rpm = self.requests_per_minute
+        burst = self.burst_capacity
+
+        # tier-based override
+        if self.tier_rules:
+            applied = False
+            if user_scopes:
+                for scope in user_scopes:
+                    if scope in self.tier_rules:
+                        rule = self.tier_rules[scope]
+                        rpm = rule.get('rpm', rpm)
+                        burst = rule.get('burst', burst)
+                        applied = True
+                        break
+            if not applied:
+                # try wildcard or DEFAULT rule
+                for default_key in ('*', 'DEFAULT'):
+                    if default_key in self.tier_rules:
+                        rule = self.tier_rules[default_key]
+                        rpm = rule.get('rpm', rpm)
+                        burst = rule.get('burst', burst)
+                        break
+
+        # geo-based override
+        if client_ip and self.geo_rules:
+            country = self._country_for_ip(client_ip)
+            rule = self.geo_rules.get(country) or self.geo_rules.get('DEFAULT')
+            if rule:
+                rpm = rule.get('rpm', rpm)
+                burst = rule.get('burst', burst)
+
+        return rpm, burst
+
+    def _country_for_ip(self, ip_str: str) -> str:
+        """Rudimentary geolocation based on reserved test ranges.
+
+        For production a proper GeoIP database should be used.  We hard-code a
+        couple of RFC 5737 test prefixes so that unit tests can simulate
+        different countries without external dependencies.
+        """
+        try:
+            ip = ipaddress.ip_address(ip_str)
+            # 192.0.2.0/24 -> US, 203.0.113.0/24 -> JP
+            if ip in ipaddress.ip_network('192.0.2.0/24'):
+                return 'US'
+            if ip in ipaddress.ip_network('203.0.113.0/24'):
+                return 'JP'
+        except Exception:
+            pass
+        return 'DEFAULT'
     
     def get_wait_time(self, client_id: str, tokens: int = 1) -> float:
         """

@@ -170,6 +170,34 @@ class TestRateLimiter:
         # Should allow at least 1 more request
         assert limiter.check("client1")
 
+    def test_geo_aware_limits(self):
+        """Geo rules override default limits based on client IP."""
+        # set environment variable with geo rules
+        os.environ['RATE_LIMIT_GEO'] = '{"US": {"rpm": 2, "burst": 2}, "DEFAULT": {"rpm": 1, "burst": 1}}'
+        limiter = RateLimiter(requests_per_minute=60)
+        # IP in US range
+        for _ in range(2):
+            assert limiter.check("user", client_ip="192.0.2.5")
+        assert not limiter.check("user", client_ip="192.0.2.5")
+        # IP outside rules uses default
+        assert limiter.check("foo", client_ip="8.8.8.8")
+        assert not limiter.check("foo", client_ip="8.8.8.8")
+        # clean up
+        del os.environ['RATE_LIMIT_GEO']
+
+    def test_tier_based_limits(self):
+        """Tier rules change rate based on user scopes."""
+        os.environ['RATE_LIMIT_TIERS'] = '{"premium": {"rpm": 3, "burst": 3}, "*": {"rpm": 1, "burst": 1}}'
+        limiter = RateLimiter(requests_per_minute=60)
+        # premium scope should allow 3
+        for _ in range(3):
+            assert limiter.check("alice", user_scopes=["premium"])
+        assert not limiter.check("alice", user_scopes=["premium"])
+        # default scope
+        assert limiter.check("bob", user_scopes=["basic"])
+        assert not limiter.check("bob", user_scopes=["basic"])
+        del os.environ['RATE_LIMIT_TIERS']
+
 
 class TestAuditLogger:
     """Tests for audit logging."""

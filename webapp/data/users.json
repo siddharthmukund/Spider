@@ -1,7 +1,7 @@
 {
   "testuser": {
     "username": "testuser",
-    "hashed_password": "$2b$12$5VQ6Rn3eKsjk3Nvh4AQuX.3.OpWF9axg9gD/dYy8ruM2gPqwOBb7S",
+    "hashed_password": "$2b$12$pl1TfQ8NK1dfHvQiIhr48emPc96XU2S0JrhtjQbD5.P06RT.kCLK.",
     "scopes": [
       "*"
     ],

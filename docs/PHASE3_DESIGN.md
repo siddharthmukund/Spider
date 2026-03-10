@@ -30,7 +30,19 @@ This document outlines the design approach for Phase 3 of the SEO Crawler enhanc
 5. **API key fallback** – still support service-account keys stored per-user
    - Keys rotated independently, stored hashed and compared with `compare_digest`
 6. **Role/Scope Enforcement** – protect endpoints with `Depends(get_current_user)` and scope checks
-7. **Admin CLI** – utility script `scripts/manage_users.py` to create/list/revoke users and keys
+6. **Admin CLI** – utility script `scripts/manage_users.py` to create/list/revoke users and keys.  The CLI also supports key generation and removal, enabling easy bootstrap in production.
+
+### Migration from single API key
+Existing deployments that rely on `WEBAPP_API_KEY` can migrate as follows:
+
+```bash
+export OLD=$(echo $WEBAPP_API_KEY)
+python scripts/manage_users.py create admin --password "<pick a password>" --superuser --api-key
+# note: the CLI will emit the new key; compare to OLD and add if desired
+```
+
+Alternatively, simply treat the existing key as an admin service key by
+storing its hash in `webapp/data/users.json` under a new `admin` record.
 
 ### High‑Level Flow
 

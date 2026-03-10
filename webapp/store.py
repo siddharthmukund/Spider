@@ -2,10 +2,16 @@ import json
 from pathlib import Path
 from typing import Dict, Any
 
-DATA_DIR = Path(__file__).resolve().parent / 'data'
+# allow tests or deployments to redirect the storage directory
+# by setting WEBAPP_DATA_DIR environment variable
+_data_base = os.getenv('WEBAPP_DATA_DIR')
+if _data_base:
+    DATA_DIR = Path(_data_base)
+else:
+    DATA_DIR = Path(__file__).resolve().parent / 'data'
 TASKS_FILE = DATA_DIR / 'tasks.json'
 
-DATA_DIR.mkdir(exist_ok=True)
+DATA_DIR.mkdir(exist_ok=True, parents=True)
 
 
 def load_tasks() -> Dict[str, Dict[str, Any]]:
