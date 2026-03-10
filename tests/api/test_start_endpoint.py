@@ -137,6 +137,15 @@ class TestStartEndpoint:
         }, headers=jwt_auth_headers)
         assert response.status_code == 400
 
+    def test_allowlist_bypasses_ssrf(self, client, jwt_auth_headers, monkeypatch):
+        """URLs listed in SSRF_ALLOWED_HOSTS should skip validation."""
+        monkeypatch.setenv("SSRF_ALLOWED_HOSTS", "test.example.org")
+        response = client.post("/start", json={
+            "base_url": "http://test.example.org",
+            "max_pages": 1
+        }, headers=jwt_auth_headers)
+        assert response.status_code == 200
+
     def test_invalid_url_scheme_returns_400(self, client, jwt_auth_headers):
         """Test that invalid URL scheme (not http/https) returns error."""
         response = client.post("/start", json={

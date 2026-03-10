@@ -2,6 +2,7 @@
 
 Validates URLs to prevent internal network access and metadata endpoints.
 """
+import os
 import ipaddress
 import socket
 from urllib.parse import urlparse
@@ -9,7 +10,14 @@ from typing import Tuple, Set, List
 
 
 class SSRFValidator:
-    """Validate URLs to prevent Server-Side Request Forgery attacks."""
+    """Validate URLs to prevent Server-Side Request Forgery attacks.
+
+    Supports an allowlist via the ``SSRF_ALLOWED_HOSTS`` environment variable
+    which contains comma-separated hostnames (or leading-dot suffixes for
+    subdomain matching). Hosts in the allowlist bypass all other checks, which
+    is useful for trusted internal domains or during testing when DNS isn't
+    available.
+    """
     
     # Allowed URL schemes
     ALLOWED_SCHEMES: Set[str] = {'http', 'https'}
@@ -66,9 +74,23 @@ class SSRFValidator:
             hostname = parsed.hostname
             if not hostname:
                 return False, "Missing hostname in URL."
-            
-            # Check against blocked hostnames
             hostname_lower = hostname.lower()
+
+            # Allowlist check: if the hostname matches any allowlisted entry,
+            # skip further validation.  Entries may be exact ("example.com") or
+            # start with a dot (".example.com") to permit any subdomain.
+            allowed_raw = os.getenv("SSRF_ALLOWED_HOSTS", "")
+            if allowed_raw:
+                allowed = [h.strip().lower() for h in allowed_raw.split(",") if h.strip()]
+                for entry in allowed:
+                    if entry.startswith('.'):
+                        if hostname_lower.endswith(entry):
+                            return True, ""
+                    else:
+                        if hostname_lower == entry:
+                            return True, ""
+
+            # Check against blocked hostnames
             if hostname_lower in cls.BLOCKED_HOSTS:
                 return False, f"Host '{hostname}' is blocked for security reasons."
             
